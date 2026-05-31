@@ -2,7 +2,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes,
     ConversationHandler,
-    CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
     filters
@@ -18,6 +17,7 @@ DURATIONS = {'7': 7, '30': 30, '90': 90}
 # --- لوحة الأدمن الرئيسية ---
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in config.ADMIN_IDS:
+        await update.message.reply_text("❌ أنت لست مشرفًا.")
         return
     keyboard = [
         [InlineKeyboardButton("📊 إحصائيات", callback_data="admin_stats")],
@@ -29,13 +29,13 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_text("🔧 لوحة الأدمن:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# --- دوال أزرار الأدمن العامة ---
+# --- دوال أزرار الأدمن العامة (لا تشمل manual_vip) ---
 async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+
     if data == "admin_stats":
-        # استعلام سريع
         await query.edit_message_text("📊 الإحصائيات قريباً...")
     elif data == "admin_addtask":
         await query.edit_message_text("➕ سيتم إضافة مهمة قريباً...")
@@ -43,26 +43,29 @@ async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("📢 أرسل الرسالة التي تريد بثها:")
         context.user_data['awaiting_broadcast'] = True
     elif data == "admin_support":
-        msgs = await db.get_unreplied_support()
-        if not msgs:
-            await query.edit_message_text("لا توجد رسائل دعم جديدة.")
-        else:
-            text = "\n".join([f"ID: {m[0]} | مستخدم: {m[1]} | {m[2]}" for m in msgs])
-            await query.edit_message_text(text)
+        try:
+            msgs = await db.get_unreplied_support()
+            if not msgs:
+                await query.edit_message_text("لا توجد رسائل دعم جديدة.")
+            else:
+                text = "\n".join([f"ID: {m[0]} | مستخدم: {m[1]} | {m[2]}" for m in msgs])
+                await query.edit_message_text(text)
+        except Exception as e:
+            await query.edit_message_text(f"❌ خطأ في جلب رسائل الدعم: {str(e)}")
     elif data == "admin_payments":
         await query.edit_message_text("💳 سجل الدفع قريباً...")
 
 # --- بث رسالة ---
 async def broadcast_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get('awaiting_broadcast'):
-        text = update.message.text
-        # إرسال لجميع المستخدمين (يحتاج تحسين للأداء)
-        # يمكنك استخدام db لاستخراج كل IDs
-        # هنا مثال بسيط
-        await update.message.reply_text("تم البث (للمستخدمين الفعليين سيحتاج تطوير)")
-        context.user_data['awaiting_broadcast'] = False
+    if not context.user_data.get('awaiting_broadcast'):
+        return
+    text = update.message.text
+    context.user_data['awaiting_broadcast'] = False
+    # في النسخة الحالية: إرسال للأدمن فقط لتأكيد الاستلام
+    # يمكن تطويره لاحقاً لجلب جميع المستخدمين من قاعدة البيانات
+    await update.message.reply_text(f"✅ تم استلام رسالة البث:\n\n{text}")
 
-# --- محادثة التفعيل اليدوي ---
+# --- محادثة التفعيل اليدوي (تبدأ من الزر) ---
 async def manual_vip_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -107,12 +110,19 @@ async def manual_vip_duration(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("❌ مدة غير صالحة.")
         return ConversationHandler.END
 
-    user_id = context.user_data['manual_vip_user_id']
-    await db.set_vip(user_id, days)
-    await db.add_payment(user_id, 0, "manual", f"admin_grant_{days}d", "manual")
-    await query.edit_message_text(f"✅ تم تفعيل VIP للمستخدم `{user_id}` لمدة {days} يوم.")
+    user_id = context.user_data.get('manual_vip_user_id')
+    if not user_id:
+        await query.edit_message_text("❌ خطأ: لم يتم العثور على أيدي المستخدم.")
+        return ConversationHandler.END
+
     try:
-        await context.bot.send_message(user_id, f"🎉 تم تفعيل اشتراك VIP لك لمدة {days} يوم من قبل المشرف!")
-    except:
-        pass
+        await db.set_vip(user_id, days)
+        await db.add_payment(user_id, 0, "manual", f"admin_grant_{days}d", "manual")
+        await query.edit_message_text(f"✅ تم تفعيل VIP للمستخدم `{user_id}` لمدة {days} يوم.")
+        try:
+            await context.bot.send_message(user_id, f"🎉 تم تفعيل اشتراك VIP لك لمدة {days} يوم من قبل المشرف!")
+        except Exception as e:
+            print(f"تعذر إرسال الإشعار للمستخدم {user_id}: {e}")
+    except Exception as e:
+        await query.edit_message_text(f"❌ خطأ في تفعيل VIP: {str(e)}")
     return ConversationHandler.END
